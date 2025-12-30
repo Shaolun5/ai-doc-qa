@@ -1,5 +1,21 @@
 from fastapi import FastAPI
+from pydantic import BaseModel
 from typing import Optional
+
+class ParseTextRequest(BaseModel):
+    text: str
+
+class ParseResult(BaseModel):
+    name: Optional[str] = None
+    age: Optional[int] = None
+    city: Optional[str] = None
+    major: Optional[str] = None
+
+
+class ParseTextResponse(BaseModel):
+    raw_text: str
+    parsed: ParseResult
+    confidence: float
 
 app = FastAPI()
 
@@ -14,9 +30,9 @@ def echo(data: dict):
         "length": len(data)
     }
 
-@app.post("/parse-text")
-def parse_text(payload: dict):
-    text = payload.get("text", "")
+@app.post("/parse-text", response_model=ParseTextResponse)
+def parse_text(payload: ParseTextRequest):
+    text = payload.text
     parts = text.split()
 
     result = {}
