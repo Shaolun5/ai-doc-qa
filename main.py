@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
 from pydantic import BaseModel
 from typing import Optional
 
@@ -16,6 +16,10 @@ class ParseTextResponse(BaseModel):
     raw_text: str
     parsed: ParseResult
     confidence: float
+
+class ParsedPdfResponse(BaseModel):
+    pages: int
+    preview_text: str
 
 app = FastAPI()
 
@@ -35,28 +39,46 @@ def parse_text(payload: ParseTextRequest):
     text = payload.text
     parts = text.split()
 
-    result = {}
+    result = ParseResult()
     confidence = 0.0
 
     if len(parts) >= 1:
-        result["name"] = parts[0]
+        result.name = parts[0]
         confidence += 0.25
 
     for p in parts:
-        if p.isdigit() and "age" not in result:
-            result["age"] = int(p)
+        if p.isdigit() and result.age is None:
+            result.age = int(p)
             confidence += 0.25
         
     if "Beijing" in parts:
-        result["city"] = "Beijing"
+        result.city = "Beijing"
         confidence += 0.25
 
     if "Software-Engineering" in parts:
-        result["major"] = "Software Engineering"
+        result.major = "Software Engineering"
         confidence += 0.25
 
-    return {
-        "raw_text": text,
-        "parsed": result,
-        "confidence": round(confidence, 2)
-    }
+    return ParseTextResponse(
+        raw_text = text,
+        parsed = result,
+        confidence = round(confidence, 2)
+    )
+
+@app.post("/parse-pdf", response_model=ParsedPdfResponse)
+def parse_pdf(file: UploadFile = File(...)):
+    import fitz # PyMuPDF
+
+    doc = fitz.open(stream=file.file.read(), filetype="pdf")
+
+    preview_lines = []
+    for page in doc[:2]: # select first 2 pages
+        text = page.get_text()
+        preview_lines.extend(text.splitlines())
+
+    preview = "\n".join(preview_lines[:20])
+    
+    return ParsedPdfResponse(
+        pages=doc.page_count,
+        preview_text=preview
+    )
