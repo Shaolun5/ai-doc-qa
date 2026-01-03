@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File
 from openai import OpenAI
 from pydantic import BaseModel
-from typing import Optional
+from typing import Literal, Optional
 
 class ParseTextRequest(BaseModel):
     text: str
@@ -14,12 +14,12 @@ class ParseResult(BaseModel):
     age: Optional[int] = None
     city: Optional[str] = None
     major: Optional[str] = None
-
+    source: Literal["rule", "ai", "fallback"]
+    confidence: float
 
 class ParseTextResponse(BaseModel):
     raw_text: str
     parsed: ParseResult
-    confidence: float
 
 class ParsedPdfResponse(BaseModel):
     pages: int
@@ -48,35 +48,38 @@ def echo(data: dict):
         "length": len(data)
     }
 
-@app.post("/parse-text", response_model=ParseTextResponse)
-def parse_text(payload: ParseTextRequest):
-    text = payload.text
+def rule_based_parse(text: str) -> ParseResult:
     parts = text.split()
 
-    result = ParseResult()
-    confidence = 0.0
+    result = ParseResult(source="rule", confidence=0.0)
 
     if len(parts) >= 1:
         result.name = parts[0]
-        confidence += 0.25
+        result.confidence += 0.25
 
     for p in parts:
         if p.isdigit() and result.age is None:
             result.age = int(p)
-            confidence += 0.25
+            result.confidence += 0.25
         
     if "Beijing" in parts:
         result.city = "Beijing"
-        confidence += 0.25
+        result.confidence += 0.25
 
     if "Software-Engineering" in parts:
         result.major = "Software Engineering"
-        confidence += 0.25
+        result.confidence += 0.25
+
+    result.confidence = round(result.confidence, 2)
+    return result
+
+@app.post("/parse-text", response_model=ParseTextResponse)
+def parse_text(payload: ParseTextRequest):
+    result = rule_based_parse(payload.text)
 
     return ParseTextResponse(
-        raw_text = text,
+        raw_text = payload.text,
         parsed = result,
-        confidence = round(confidence, 2)
     )
 
 @app.post("/parse-pdf", response_model=ParsedPdfResponse)
@@ -98,7 +101,7 @@ def parse_pdf(file: UploadFile = File(...)):
     )
 
 def ai_parse(text: str) -> dict:
-    PROMPT = """
+    PROMPT = f"""
         Extract the following fields from the text.
         Return JSON only.
 
@@ -124,7 +127,7 @@ def ai_parse(text: str) -> dict:
             },
             {
                 "role": "user",
-                "content": PROMPT.format(text = text)
+                "content": PROMPT
             },
         ]
     )
@@ -136,5 +139,14 @@ def ai_parse(text: str) -> dict:
 
 @app.post("/ai/parse-text", response_model=ParseResult)
 def ai_parse_text(payload: ParseTextRequest):
-    result = ai_parse(payload.text)
-    return ParseResult(**result)
+    try:
+        result = ai_parse(payload.text)
+        return ParseResult(
+            **result,
+            source="ai",
+            confidence=0.8
+        )
+    except Exception:
+        rule_result = rule_based_parse(payload.text)
+        rule_result.source = "fallback"
+        return rule_result
