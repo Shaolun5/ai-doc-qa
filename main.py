@@ -1,4 +1,8 @@
+import json
+import os
+from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File
+from openai import OpenAI
 from pydantic import BaseModel
 from typing import Optional
 
@@ -20,6 +24,16 @@ class ParseTextResponse(BaseModel):
 class ParsedPdfResponse(BaseModel):
     pages: int
     preview_text: str
+
+load_dotenv()
+api_key = os.getenv("DEEPSEEK_API_KEY")
+if not api_key:
+    raise RuntimeError("DEEPSEEK_API_KEY not set")
+
+client = OpenAI(
+    api_key = api_key,
+    base_url = "https://api.deepseek.com"
+)
 
 app = FastAPI()
 
@@ -67,9 +81,9 @@ def parse_text(payload: ParseTextRequest):
 
 @app.post("/parse-pdf", response_model=ParsedPdfResponse)
 def parse_pdf(file: UploadFile = File(...)):
-    import fitz # PyMuPDF
+    import pymupdf
 
-    doc = fitz.open(stream=file.file.read(), filetype="pdf")
+    doc = pymupdf.open(stream=file.file.read(), filetype="pdf")
 
     preview_lines = []
     for page in doc[:2]: # select first 2 pages
@@ -82,3 +96,45 @@ def parse_pdf(file: UploadFile = File(...)):
         pages=doc.page_count,
         preview_text=preview
     )
+
+def ai_parse(text: str) -> dict:
+    PROMPT = """
+        Extract the following fields from the text.
+        Return JSON only.
+
+        Fields:
+        - name
+        - age
+        - city
+        - major
+
+        Text:
+        {text}
+    """
+    response = client.chat.completions.create(
+        model="deepseek-chat",
+        messages = [
+            {
+                "role": "system", 
+                "content": (
+                    "You are a JSON generator.\n"
+                    "You must output valid strict JSON only.\n"
+                    "Do not include markdown, comments, or extra text."
+                )
+            },
+            {
+                "role": "user",
+                "content": PROMPT.format(text = text)
+            },
+        ]
+    )
+
+    content = response.choices[0].message.content
+    print(content)
+
+    return json.loads(content)
+
+@app.post("/ai/parse-text", response_model=ParseResult)
+def ai_parse_text(payload: ParseTextRequest):
+    result = ai_parse(payload.text)
+    return ParseResult(**result)
