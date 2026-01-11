@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import json
 import os
 from dotenv import load_dotenv
@@ -21,9 +22,21 @@ class ParseTextResponse(BaseModel):
     raw_text: str
     parsed: ParseResult
 
-class ParsedPdfResponse(BaseModel):
+class ParsePdfPreviewResponse(BaseModel):
     pages: int
     preview_text: str
+
+@dataclass
+class TextChunk:
+    doc_id: str
+    chunk_id: int
+    text: str
+
+class ParsedPdfResponse(BaseModel):
+    number_of_chunks: int
+    chunk_1: Optional[TextChunk] = None
+    chunk_2: Optional[TextChunk] = None
+    chunk_last: Optional[TextChunk] = None
 
 load_dotenv()
 api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -82,23 +95,22 @@ def parse_text(payload: ParseTextRequest):
         parsed = result,
     )
 
-@app.post("/parse-pdf", response_model=ParsedPdfResponse)
-def parse_pdf(file: UploadFile = File(...)):
+@app.post("/parse-pdf-preview", response_model=ParsePdfPreviewResponse)
+def parse_pdf_preview(file: UploadFile = File(...)):
     import pymupdf
 
-    doc = pymupdf.open(stream=file.file.read(), filetype="pdf")
+    with pymupdf.open(stream=file.file.read(), filetype="pdf") as doc:
+        preview_lines = []
+        for page in doc[:2]: # select first 2 pages
+            text = page.get_text()
+            preview_lines.extend(text.splitlines())
 
-    preview_lines = []
-    for page in doc[:2]: # select first 2 pages
-        text = page.get_text()
-        preview_lines.extend(text.splitlines())
-
-    preview = "\n".join(preview_lines[:20])
-    
-    return ParsedPdfResponse(
-        pages=doc.page_count,
-        preview_text=preview
-    )
+        preview = "\n".join(preview_lines[:20])
+        
+        return ParsePdfPreviewResponse(
+            pages=doc.page_count,
+            preview_text=preview
+        )
 
 def ai_parse(text: str) -> dict:
     PROMPT = f"""
@@ -150,3 +162,52 @@ def ai_parse_text(payload: ParseTextRequest):
         rule_result = rule_based_parse(payload.text)
         rule_result.source = "fallback"
         return rule_result
+    
+
+def chunk_text(text: str, chunk_size: int = 500, overlap: int = 100) -> list[str]:
+    '''
+    A fixed size chunking function
+    It breaks down the text into chunks of specified number of characters, which is
+    passed in by chunk_size.
+    '''
+    if chunk_size <= overlap:
+        raise ValueError
+
+    chunk_li = []
+
+    for i in range(0, len(text), chunk_size - overlap):
+        chunk_li.append(text[i:i+chunk_size])
+
+    return chunk_li
+
+def build_chunks(text: str, doc_id: str) -> list[TextChunk]:
+    chunks = []
+    raw_chunks = chunk_text(text)
+    
+    for i in range(len(raw_chunks)):
+        chunks.append(TextChunk(doc_id, i, raw_chunks[i]))
+
+    return chunks
+
+@app.post("/parse-pdf", response_model=ParsedPdfResponse)
+def parse_pdf(file: UploadFile = File(...)):
+    import pymupdf
+
+    with pymupdf.open(stream=file.file.read(), filetype="pdf") as doc:
+        lines = []
+        for page in doc: # select first 2 pages
+            lines.extend(page.get_text().splitlines())
+
+        text = '\n'.join(lines)
+
+        chunks = build_chunks(text, file.filename)
+        n = len(chunks)
+
+        preview = ParsedPdfResponse(number_of_chunks=n)
+        if n > 0:
+            preview.chunk_1 = chunks[0]
+            preview.chunk_last = chunks[-1]
+        if n > 1:
+            preview.chunk_2 = chunks[1]
+
+        return preview
