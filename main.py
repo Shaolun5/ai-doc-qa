@@ -28,15 +28,19 @@ class ParsePdfPreviewResponse(BaseModel):
 
 @dataclass
 class TextChunk:
+    '''Internal domain object, not exposed via API'''
     doc_id: str
     chunk_id: int
     text: str
 
-class ParsedPdfResponse(BaseModel):
+class TextChunkDTO(BaseModel):
+    doc_id: str
+    chunk_id: int
+    text: str
+
+class ParsePdfResponse(BaseModel):
     number_of_chunks: int
-    chunk_1: Optional[TextChunk] = None
-    chunk_2: Optional[TextChunk] = None
-    chunk_last: Optional[TextChunk] = None
+    preview_chunks: list[TextChunkDTO]
 
 load_dotenv()
 api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -171,31 +175,48 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 100) -> list[str
     passed in by chunk_size.
     '''
     if chunk_size <= overlap:
-        raise ValueError
+        raise ValueError("overlap must be smaller than chunk_size")
 
-    chunk_li = []
+    # chunk_li = []
+    # for i in range(0, len(text), chunk_size - overlap):
+    #     chunk_li.append(text[i:i+chunk_size])
+    # return chunk_li
 
-    for i in range(0, len(text), chunk_size - overlap):
-        chunk_li.append(text[i:i+chunk_size])
-
-    return chunk_li
+    # is the same as above:
+    return [
+        text[i:i+chunk_size]
+        for i in range(0, len(text), chunk_size - overlap)
+    ]
 
 def build_chunks(text: str, doc_id: str) -> list[TextChunk]:
-    chunks = []
-    raw_chunks = chunk_text(text)
-    
-    for i in range(len(raw_chunks)):
-        chunks.append(TextChunk(doc_id, i, raw_chunks[i]))
+    # chunks = []
+    # raw_chunks = chunk_text(text) 
+    # for i in range(len(raw_chunks)):
+    #     chunks.append(TextChunk(doc_id, i, raw_chunks[i]))
 
-    return chunks
+    # return chunks
 
-@app.post("/parse-pdf", response_model=ParsedPdfResponse)
+    # is the same as above:
+    return [
+        TextChunk(doc_id, i, chunk)
+        for i, chunk in enumerate(chunk_text(text))
+    ]
+
+def to_dto(chunk: TextChunk) -> TextChunkDTO:
+    '''Convert dataclass to DTO explicitly'''
+    return TextChunkDTO(
+        doc_id=chunk.doc_id,
+        chunk_id=chunk.chunk_id,
+        text=chunk.text,
+    )
+
+@app.post("/parse-pdf", response_model=ParsePdfResponse)
 def parse_pdf(file: UploadFile = File(...)):
     import pymupdf
 
     with pymupdf.open(stream=file.file.read(), filetype="pdf") as doc:
         lines = []
-        for page in doc: # select first 2 pages
+        for page in doc:
             lines.extend(page.get_text().splitlines())
 
         text = '\n'.join(lines)
@@ -203,11 +224,15 @@ def parse_pdf(file: UploadFile = File(...)):
         chunks = build_chunks(text, file.filename)
         n = len(chunks)
 
-        preview = ParsedPdfResponse(number_of_chunks=n)
+        preview_chunks = []
         if n > 0:
-            preview.chunk_1 = chunks[0]
-            preview.chunk_last = chunks[-1]
+            preview_chunks.append(to_dto(chunks[0]))
         if n > 1:
-            preview.chunk_2 = chunks[1]
+            preview_chunks.append(to_dto(chunks[1]))
+        if n > 2:  # only append the last if there are more than 2 chunks
+            preview_chunks.append(to_dto(chunks[-1]))
 
-        return preview
+        return ParsePdfResponse(
+            number_of_chunks=n,
+            preview_chunks=preview_chunks
+        )
